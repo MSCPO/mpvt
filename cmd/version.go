@@ -1,0 +1,34 @@
+package cmd
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+	"mpvt/internal/ui"
+)
+
+const (
+	Version   = "1.0.0"
+	BuildDate = "2026-10-18"
+)
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print the version number of mpvt",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagJSON {
+			return outputJSON(map[string]string{
+				"version":   Version,
+				"buildDate": BuildDate,
+				"app":       "mpvt (MSCPO ProjectVitals CLI)",
+			})
+		}
+		fmt.Printf("%s version %s (%s)\n", ui.Bold("mpvt"), ui.Cyan(Version), ui.Dim(BuildDate))
+		fmt.Println("MSCPO ProjectVitals CLI - Transparent progress tracking tool")
+		return nil
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(versionCmd)
+}

@@ -1,0 +1,255 @@
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	DefaultEndpoint = "https://api.mscpo.com/api/projectvitals"
+	ConfigDirName   = "mpvt"
+	LocalDirName    = ".mpvt"
+	LocalConfigFile = "config.json"
+)
+
+// GlobalConfig stores global CLI preferences and credentials in ~/.config/mpvt/config.yaml
+type GlobalConfig struct {
+	Endpoint      string `yaml:"endpoint"`
+	AuthEndpoint  string `yaml:"auth_endpoint,omitempty"`
+	Token         string `yaml:"token,omitempty"`
+	RefreshToken  string `yaml:"refresh_token,omitempty"`
+	InternalToken string `yaml:"internal_token,omitempty"`
+	UserId        string `yaml:"user_id,omitempty"`
+	UserRole      string `yaml:"user_role,omitempty"`
+	UserEmail     string `yaml:"user_email,omitempty"`
+	UserName      string `yaml:"user_name,omitempty"`
+}
+
+// LocalConfig stores project binding information in ./.mpvt/config.json
+type LocalConfig struct {
+	ProjectId             string `json:"project_id"`
+	ProjectSlug           string `json:"project_slug"`
+	ProjectTitle          string `json:"project_title"`
+	Endpoint              string `json:"endpoint,omitempty"`
+	DefaultMilestoneId    string `json:"default_milestone_id,omitempty"`
+	DefaultMilestoneTitle string `json:"default_milestone_title,omitempty"`
+}
+
+// Config is the merged active configuration
+type Config struct {
+	Global    GlobalConfig
+	Local     *LocalConfig
+	LocalPath string // Path to .mpvt directory if found
+}
+
+// GetGlobalConfigPath returns ~/.config/mpvt/config.yaml
+func GetGlobalConfigPath() (string, error) {
+	configHome, err := os.UserConfigDir()
+	if err != nil {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to get user home directory: %w", err)
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	dir := filepath.Join(configHome, ConfigDirName)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("failed to create config directory %s: %w", dir, err)
+	}
+	if err := os.Chmod(dir, 0700); err != nil {
+		return "", fmt.Errorf("failed to set permissions on config directory %s: %w", dir, err)
+	}
+	return filepath.Join(dir, "config.yaml"), nil
+}
+
+// LoadGlobalConfig reads ~/.config/mpvt/config.yaml
+func LoadGlobalConfig() (GlobalConfig, error) {
+	var cfg GlobalConfig
+	cfg.Endpoint = DefaultEndpoint
+
+	path, err := GetGlobalConfigPath()
+	if err != nil {
+		return cfg, fmt.Errorf("failed to get global config path: %w", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return cfg, fmt.Errorf("failed to read global config file %s: %w", path, err)
+	}
+
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("failed to parse global config: %w", err)
+	}
+
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = DefaultEndpoint
+	}
+
+	// Environment variable overrides
+	if envEndpoint := os.Getenv("MPVT_ENDPOINT"); envEndpoint != "" {
+		cfg.Endpoint = envEndpoint
+	}
+	if envToken := os.Getenv("MPVT_TOKEN"); envToken != "" {
+		cfg.Token = envToken
+	}
+	if envInternalToken := os.Getenv("MPVT_INTERNAL_TOKEN"); envInternalToken != "" {
+		cfg.InternalToken = envInternalToken
+	}
+	if envUserId := os.Getenv("MPVT_USER_ID"); envUserId != "" {
+		cfg.UserId = envUserId
+	}
+	if envUserEmail := os.Getenv("MPVT_USER_EMAIL"); envUserEmail != "" {
+		cfg.UserEmail = envUserEmail
+	}
+	if envUserRole := os.Getenv("MPVT_USER_ROLE"); envUserRole != "" {
+		cfg.UserRole = envUserRole
+	}
+
+	return cfg, nil
+}
+
+// SaveGlobalConfig writes ~/.config/mpvt/config.yaml
+func SaveGlobalConfig(cfg GlobalConfig) error {
+	path, err := GetGlobalConfigPath()
+	if err != nil {
+		return fmt.Errorf("failed to get global config path: %w", err)
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal global config: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("failed to write global config file %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("failed to set permissions on global config file %s: %w", path, err)
+	}
+	return nil
+}
+
+// isGitRoot checks if a directory contains a .git entry (file or directory)
+func isGitRoot(dir string) bool {
+	gitPath := filepath.Join(dir, ".git")
+	_, err := os.Stat(gitPath)
+	return err == nil
+}
+
+// FindLocalConfig recursively checks the current directory and parents for .mpvt/config.json.
+// Traversal stops if it reaches a .git root directory or user HOME to prevent ambient inheritance.
+func FindLocalConfig() (*LocalConfig, string, error) {
+	currDir, err := os.Getwd()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get current working directory: %w", err)
+	}
+
+	var homeDir string
+	if h, err := os.UserHomeDir(); err == nil {
+		homeDir = filepath.Clean(h)
+	}
+
+	for {
+		cleanCurr := filepath.Clean(currDir)
+		candidateDir := filepath.Join(cleanCurr, LocalDirName)
+		candidateFile := filepath.Join(candidateDir, LocalConfigFile)
+		if fi, err := os.Stat(candidateFile); err == nil && !fi.IsDir() {
+			data, err := os.ReadFile(candidateFile)
+			if err != nil {
+				return nil, candidateDir, fmt.Errorf("failed to read %s: %w", candidateFile, err)
+			}
+			var local LocalConfig
+			if err := json.Unmarshal(data, &local); err != nil {
+				return nil, candidateDir, fmt.Errorf("failed to parse %s: %w", candidateFile, err)
+			}
+			return &local, candidateDir, nil
+		}
+
+		// Stop upwards directory traversal if current directory is a .git repository root or user HOME
+		if isGitRoot(cleanCurr) || (homeDir != "" && cleanCurr == homeDir) {
+			break
+		}
+
+		parent := filepath.Dir(cleanCurr)
+		if parent == cleanCurr {
+			// Reached root
+			break
+		}
+		currDir = parent
+	}
+
+	return nil, "", nil
+}
+
+// SaveLocalConfig writes .mpvt/config.json in the specified or current directory
+func SaveLocalConfig(dir string, local LocalConfig) error {
+	if dir == "" {
+		var err error
+		dir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current working directory: %w", err)
+		}
+	}
+
+	mpvtDir := filepath.Join(dir, LocalDirName)
+	if err := os.MkdirAll(mpvtDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", mpvtDir, err)
+	}
+
+	data, err := json.MarshalIndent(local, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal local config: %w", err)
+	}
+
+	filePath := filepath.Join(mpvtDir, LocalConfigFile)
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write local config to %s: %w", filePath, err)
+	}
+	return nil
+}
+
+var ErrProjectNotBound = errors.New("no linked project found in current directory. Please run 'mpvt link <slug>' or 'mpvt init'")
+
+// LoadActiveConfig loads both global and local configurations
+func LoadActiveConfig() (*Config, error) {
+	global, err := LoadGlobalConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load global config: %w", err)
+	}
+
+	local, localPath, err := FindLocalConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to find local config: %w", err)
+	}
+
+	return &Config{
+		Global:    global,
+		Local:     local,
+		LocalPath: localPath,
+	}, nil
+}
+
+// GetEffectiveEndpoint returns global/flag endpoint, or DefaultEndpoint if unset.
+// Local project configs are not permitted to override the API endpoint for security.
+func (c *Config) GetEffectiveEndpoint() string {
+	if c.Global.Endpoint != "" {
+		return c.Global.Endpoint
+	}
+	return DefaultEndpoint
+}
+
+// EnsureProjectBound returns an error if not in a linked project directory
+func (c *Config) EnsureProjectBound() (*LocalConfig, error) {
+	if c.Local == nil || c.Local.ProjectId == "" {
+		return nil, ErrProjectNotBound
+	}
+	return c.Local, nil
+}
