@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"mpvt/internal/api"
@@ -55,8 +54,7 @@ func TestAuthStatus_WithMockHealth(t *testing.T) {
 
 func TestAuthLogin_ManualTokenSavesConfig(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+	isolateTestHome(t, tmpHome)
 
 	activeConfig = &config.Config{}
 	loginToken = "my-manual-token-secret"

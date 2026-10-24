@@ -9,10 +9,22 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"mpvt/internal/config"
 )
+
+func isolateTestHome(t *testing.T, tmpHome string) {
+	t.Helper()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	t.Setenv("AppData", filepath.Join(tmpHome, "AppData", "Roaming"))
+	t.Setenv("LocalAppData", filepath.Join(tmpHome, "AppData", "Local"))
+}
 
 func TestLocalConfigCycle(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "mpvt_test_*")
@@ -164,7 +176,7 @@ func TestFindLocalConfig_StopsAtUserHome(t *testing.T) {
 		t.Fatalf("failed to create workDir: %v", err)
 	}
 
-	t.Setenv("HOME", mockHome)
+	isolateTestHome(t, mockHome)
 
 	origWd, _ := os.Getwd()
 	defer os.Chdir(origWd)
@@ -214,14 +226,8 @@ func TestGetEffectiveEndpoint_Precedence(t *testing.T) {
 }
 
 func TestGlobalConfigPermissions(t *testing.T) {
-	tempHome, err := os.MkdirTemp("", "mpvt_home_perm_*")
-	if err != nil {
-		t.Fatalf("failed to create temp home: %v", err)
-	}
-	defer os.RemoveAll(tempHome)
-
-	t.Setenv("HOME", tempHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	tempHome := t.TempDir()
+	isolateTestHome(t, tempHome)
 
 	path, err := config.GetGlobalConfigPath()
 	if err != nil {
@@ -233,6 +239,10 @@ func TestGlobalConfigPermissions(t *testing.T) {
 	}
 	if err := config.SaveGlobalConfig(cfg); err != nil {
 		t.Fatalf("SaveGlobalConfig failed: %v", err)
+	}
+
+	if runtime.GOOS == "windows" {
+		return // Windows does not support POSIX permission bits (0700/0600)
 	}
 
 	dir := filepath.Dir(path)
@@ -255,8 +265,7 @@ func TestGlobalConfigPermissions(t *testing.T) {
 
 func TestGetGlobalConfigPath_NoSideEffects(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	isolateTestHome(t, tempHome)
 
 	path, err := config.GetGlobalConfigPath()
 	if err != nil {
@@ -271,8 +280,7 @@ func TestGetGlobalConfigPath_NoSideEffects(t *testing.T) {
 
 func TestLoadGlobalConfig_EnvOverrides(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	isolateTestHome(t, tempHome)
 
 	t.Setenv("MPVT_ENDPOINT", "https://env-api.example.com")
 	t.Setenv("MPVT_AUTH_ENDPOINT", "https://env-auth.example.com")
@@ -333,8 +341,7 @@ func TestLoadGlobalConfig_EnvOverrides(t *testing.T) {
 
 func TestEnsureGlobalConfigDir(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	isolateTestHome(t, tempHome)
 
 	dir, err := config.EnsureGlobalConfigDir()
 	if err != nil {
@@ -347,15 +354,14 @@ func TestEnsureGlobalConfigDir(t *testing.T) {
 	if !info.IsDir() {
 		t.Fatalf("expected directory, got file")
 	}
-	if info.Mode().Perm() != 0700 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0700 {
 		t.Errorf("expected 0700 perms, got %o", info.Mode().Perm())
 	}
 }
 
 func TestLoadActiveConfig_WithAndWithoutLocal(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	isolateTestHome(t, tempHome)
 
 	workDir := t.TempDir()
 	origWd, _ := os.Getwd()
@@ -431,8 +437,7 @@ func TestEnsureProjectBoundAndEffectiveEndpoint(t *testing.T) {
 
 func TestLoadGlobalConfig_CorruptYAML(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+	isolateTestHome(t, tempHome)
 
 	path, err := config.GetGlobalConfigPath()
 	if err != nil {
@@ -460,15 +465,19 @@ func TestLoadGlobalConfig_CorruptYAML(t *testing.T) {
 func TestConfigHome_NoEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "")
+	t.Setenv("AppData", "")
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 
 	_, err := config.EnsureGlobalConfigDir()
 	if err == nil {
-		t.Errorf("expected error for EnsureGlobalConfigDir with empty HOME/XDG, got nil")
+		t.Errorf("expected error for EnsureGlobalConfigDir with empty HOME/XDG/AppData, got nil")
 	}
 
 	_, err = config.GetGlobalConfigPath()
 	if err == nil {
-		t.Errorf("expected error for GetGlobalConfigPath with empty HOME/XDG, got nil")
+		t.Errorf("expected error for GetGlobalConfigPath with empty HOME/XDG/AppData, got nil")
 	}
 }
 

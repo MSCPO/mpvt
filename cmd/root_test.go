@@ -52,7 +52,20 @@ func TestExecuteContextCancellation(t *testing.T) {
 	_ = err
 }
 
+func isolateTestHome(t *testing.T, tmpHome string) {
+	t.Helper()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	t.Setenv("AppData", filepath.Join(tmpHome, "AppData", "Roaming"))
+	t.Setenv("LocalAppData", filepath.Join(tmpHome, "AppData", "Local"))
+}
+
 func TestExecuteSuccess(t *testing.T) {
+	tmpHome := t.TempDir()
+	isolateTestHome(t, tmpHome)
 	rootCmd.SetArgs([]string{"version"})
 	defer rootCmd.SetArgs([]string{})
 	Execute()
@@ -166,7 +179,7 @@ func TestVersionCommand(t *testing.T) {
 func TestOfflineCommand_SkipsRemoteProjectResolution(t *testing.T) {
 	// Setup isolated home
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateTestHome(t, tmpHome)
 
 	flagProject = "non-existent-project-xyz"
 	defer func() { flagProject = "" }()
@@ -182,8 +195,7 @@ func TestOfflineCommand_SkipsRemoteProjectResolution(t *testing.T) {
 
 func TestAuthLogin_TokenStdin(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+	isolateTestHome(t, tmpHome)
 
 	// Pipe token into stdin
 	r, w, err := os.Pipe()
@@ -225,8 +237,7 @@ func TestAuthLogin_TokenStdin(t *testing.T) {
 
 func TestAuthLogout(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+	isolateTestHome(t, tmpHome)
 
 	activeConfig = &config.Config{
 		Global: config.GlobalConfig{
