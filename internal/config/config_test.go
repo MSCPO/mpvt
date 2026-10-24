@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 CyanTea <ushio_noa@disroot.org>
+// SPDX-FileCopyrightText: 2026 Minecraft Server Collective Promotion Organization
+//
+// SPDX-License-Identifier: MPL-2.0
+
 package config_test
 
 import (
@@ -15,6 +20,9 @@ func TestLocalConfigCycle(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
+	if realTempDir, err := filepath.EvalSymlinks(tempDir); err == nil {
+		tempDir = realTempDir
+	}
 
 	subDir := filepath.Join(tempDir, "sub", "deep")
 	if err := os.MkdirAll(subDir, 0755); err != nil {
@@ -54,8 +62,10 @@ func TestLocalConfigCycle(t *testing.T) {
 	if loaded.ProjectSlug != "my-app" {
 		t.Errorf("expected ProjectSlug my-app, got %s", loaded.ProjectSlug)
 	}
-	if dir != filepath.Join(tempDir, config.LocalDirName) {
-		t.Errorf("expected dir %s, got %s", filepath.Join(tempDir, config.LocalDirName), dir)
+	realDir, _ := filepath.EvalSymlinks(dir)
+	realExpected, _ := filepath.EvalSymlinks(filepath.Join(tempDir, config.LocalDirName))
+	if realDir != realExpected {
+		t.Errorf("expected dir %s, got %s", realExpected, realDir)
 	}
 }
 
@@ -87,6 +97,9 @@ func TestFindLocalConfig_StopsAtGitRoot(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
+	if realTempDir, err := filepath.EvalSymlinks(tempDir); err == nil {
+		tempDir = realTempDir
+	}
 
 	// Save a config in the parent directory outside the git repo
 	parentCfg := config.LocalConfig{
@@ -131,6 +144,9 @@ func TestFindLocalConfig_StopsAtUserHome(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
+	if realTempDir, err := filepath.EvalSymlinks(tempDir); err == nil {
+		tempDir = realTempDir
+	}
 
 	// Save a config in parent directory
 	parentCfg := config.LocalConfig{
@@ -254,6 +270,10 @@ func TestGetGlobalConfigPath_NoSideEffects(t *testing.T) {
 }
 
 func TestLoadGlobalConfig_EnvOverrides(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
+
 	t.Setenv("MPVT_ENDPOINT", "https://env-api.example.com")
 	t.Setenv("MPVT_AUTH_ENDPOINT", "https://env-auth.example.com")
 	t.Setenv("MPVT_TOKEN", "env-token-123")
@@ -262,6 +282,7 @@ func TestLoadGlobalConfig_EnvOverrides(t *testing.T) {
 	t.Setenv("MPVT_USER_EMAIL", "env-user@example.com")
 	t.Setenv("MPVT_USER_ROLE", "ADMIN")
 
+	// 1. Without any existing config file
 	cfg, err := config.LoadGlobalConfig()
 	if err != nil {
 		t.Fatalf("LoadGlobalConfig failed: %v", err)
@@ -287,6 +308,26 @@ func TestLoadGlobalConfig_EnvOverrides(t *testing.T) {
 	}
 	if cfg.UserRole != "ADMIN" {
 		t.Errorf("expected role ADMIN, got %s", cfg.UserRole)
+	}
+
+	// 2. With an existing config file whose values should be overridden
+	savedCfg := config.GlobalConfig{
+		Endpoint: "https://file-api.example.com",
+		Token:    "file-token",
+	}
+	if err := config.SaveGlobalConfig(savedCfg); err != nil {
+		t.Fatalf("SaveGlobalConfig failed: %v", err)
+	}
+
+	cfgOverridden, err := config.LoadGlobalConfig()
+	if err != nil {
+		t.Fatalf("LoadGlobalConfig failed: %v", err)
+	}
+	if cfgOverridden.Endpoint != "https://env-api.example.com" {
+		t.Errorf("expected overridden endpoint, got %s", cfgOverridden.Endpoint)
+	}
+	if cfgOverridden.Token != "env-token-123" {
+		t.Errorf("expected overridden token, got %s", cfgOverridden.Token)
 	}
 }
 

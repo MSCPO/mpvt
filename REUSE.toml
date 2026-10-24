@@ -1,0 +1,12 @@
+version = 1
+SPDX-PackageName = "mpvt"
+SPDX-PackageSupplier = "CyanTea <ushio_noa@disroot.org>"
+
+[[annotations]]
+path = ["go.mod", "go.sum"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+    "2026 CyanTea <ushio_noa@disroot.org>",
+    "2026 Minecraft Server Collective Promotion Organization",
+]
+SPDX-License-Identifier = "MPL-2.0"

@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 CyanTea <ushio_noa@disroot.org>
+// SPDX-FileCopyrightText: 2026 Minecraft Server Collective Promotion Organization
+//
+// SPDX-License-Identifier: MPL-2.0
+
 package config
 
 import (
@@ -81,26 +86,34 @@ func GetGlobalConfigPath() (string, error) {
 	return filepath.Join(dir, "config.yaml"), nil
 }
 
+// isSameDir checks if two directory paths resolve to the same underlying directory on disk
+func isSameDir(dir1, dir2 string) bool {
+	if dir1 == dir2 {
+		return true
+	}
+	fi1, err1 := os.Stat(dir1)
+	fi2, err2 := os.Stat(dir2)
+	if err1 == nil && err2 == nil {
+		return os.SameFile(fi1, fi2)
+	}
+	return false
+}
+
 // LoadGlobalConfig reads ~/.config/mpvt/config.yaml
 func LoadGlobalConfig() (GlobalConfig, error) {
 	var cfg GlobalConfig
 	cfg.Endpoint = DefaultEndpoint
 
 	path, err := GetGlobalConfigPath()
-	if err != nil {
-		return cfg, fmt.Errorf("failed to get global config path: %w", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
+	if err == nil {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			if err := yaml.Unmarshal(data, &cfg); err != nil {
+				return cfg, fmt.Errorf("failed to parse global config: %w", err)
+			}
+		} else if !os.IsNotExist(readErr) {
+			return cfg, fmt.Errorf("failed to read global config file %s: %w", path, readErr)
 		}
-		return cfg, fmt.Errorf("failed to read global config file %s: %w", path, err)
-	}
-
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("failed to parse global config: %w", err)
 	}
 
 	if cfg.Endpoint == "" {
@@ -202,10 +215,16 @@ func FindLocalConfig() (*LocalConfig, string, error) {
 
 // FindLocalConfigFrom searches for .mpvt/config.json upwards starting from startDir
 func FindLocalConfigFrom(startDir string) (*LocalConfig, string, error) {
+	if realStart, err := filepath.EvalSymlinks(startDir); err == nil {
+		startDir = realStart
+	}
 	currDir := startDir
 	var homeDir string
 	if h, err := os.UserHomeDir(); err == nil {
 		homeDir = filepath.Clean(h)
+		if realH, err := filepath.EvalSymlinks(homeDir); err == nil {
+			homeDir = realH
+		}
 	}
 
 	const maxTraversalDepth = 25
@@ -229,7 +248,7 @@ func FindLocalConfigFrom(startDir string) (*LocalConfig, string, error) {
 		}
 
 		// Stop upwards directory traversal if current directory is a .git repository root or user HOME
-		if isGitRoot(cleanCurr) || (homeDir != "" && cleanCurr == homeDir) {
+		if isGitRoot(cleanCurr) || (homeDir != "" && isSameDir(cleanCurr, homeDir)) {
 			break
 		}
 

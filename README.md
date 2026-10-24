@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: 2026 CyanTea <ushio_noa@disroot.org>
+SPDX-FileCopyrightText: 2026 Minecraft Server Collective Promotion Organization
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # mpvt (MSCPO ProjectVitals Tool)
 
 > 类 Git 设计的开发者进度与生命体征上报 CLI 工具。面向闭源/开源协同体系，提交“做了什么”的文本修改记录（无代码提交），实现项目透明化与工作量追溯。
@@ -146,3 +153,11 @@ jobs:
         run: |
           mpvt --project my-project-slug commit --from-git
 ```
+
+---
+
+## 📄 开源许可证
+
+本项目采用 [Mozilla Public License 2.0 (MPL-2.0)](LICENSE) 许可证发布，并遵循 [REUSE 规范 (v3.3)](https://reuse.software/) 管理版权与许可证信息。
+各文件具体的版权人及许可证信息请见文件头部 SPDX 注释及 [`REUSE.toml`](REUSE.toml)。
+

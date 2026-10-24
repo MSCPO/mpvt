@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2026 CyanTea <ushio_noa@disroot.org>
+# SPDX-FileCopyrightText: 2026 Minecraft Server Collective Promotion Organization
+#
+# SPDX-License-Identifier: MPL-2.0
+
 name: CI & Build
 
 on:
@@ -35,6 +40,10 @@ jobs:
           go-version-file: 'go.mod'
           check-latest: true
           cache: true
+
+      - name: Run REUSE Compliance Check
+        if: runner.os == 'Linux'
+        uses: fsfe/reuse-action@v5
 
       - name: Verify Code Formatting
         if: runner.os == 'Linux'
@@ -144,6 +153,7 @@ jobs:
 
           cp bin/${{ matrix.binary_name }} "${STAGE_DIR}/"
           [ -f README.md ] && cp README.md "${STAGE_DIR}/"
+          [ -f LICENSE ] && cp -L LICENSE "${STAGE_DIR}/"
 
           cd stage
           if [ "${{ matrix.archive_ext }}" = "zip" ]; then
