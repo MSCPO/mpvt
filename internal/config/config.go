@@ -47,8 +47,8 @@ type Config struct {
 	LocalPath string // Path to .mpvt directory if found
 }
 
-// GetGlobalConfigPath returns ~/.config/mpvt/config.yaml
-func GetGlobalConfigPath() (string, error) {
+// EnsureGlobalConfigDir ensures ~/.config/mpvt directory exists with 0700 permissions
+func EnsureGlobalConfigDir() (string, error) {
 	configHome, err := os.UserConfigDir()
 	if err != nil {
 		home, err := os.UserHomeDir()
@@ -64,6 +64,20 @@ func GetGlobalConfigPath() (string, error) {
 	if err := os.Chmod(dir, 0700); err != nil {
 		return "", fmt.Errorf("failed to set permissions on config directory %s: %w", dir, err)
 	}
+	return dir, nil
+}
+
+// GetGlobalConfigPath returns ~/.config/mpvt/config.yaml without mutative side effects
+func GetGlobalConfigPath() (string, error) {
+	configHome, err := os.UserConfigDir()
+	if err != nil {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to get user home directory: %w", err)
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	dir := filepath.Join(configHome, ConfigDirName)
 	return filepath.Join(dir, "config.yaml"), nil
 }
 
@@ -97,6 +111,9 @@ func LoadGlobalConfig() (GlobalConfig, error) {
 	if envEndpoint := os.Getenv("MPVT_ENDPOINT"); envEndpoint != "" {
 		cfg.Endpoint = envEndpoint
 	}
+	if envAuthEndpoint := os.Getenv("MPVT_AUTH_ENDPOINT"); envAuthEndpoint != "" {
+		cfg.AuthEndpoint = envAuthEndpoint
+	}
 	if envToken := os.Getenv("MPVT_TOKEN"); envToken != "" {
 		cfg.Token = envToken
 	}
@@ -116,8 +133,40 @@ func LoadGlobalConfig() (GlobalConfig, error) {
 	return cfg, nil
 }
 
-// SaveGlobalConfig writes ~/.config/mpvt/config.yaml
+// atomicWriteFile writes data to a temporary file in the target directory and atomically renames it
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// SaveGlobalConfig writes ~/.config/mpvt/config.yaml atomically with 0600 permissions
 func SaveGlobalConfig(cfg GlobalConfig) error {
+	if _, err := EnsureGlobalConfigDir(); err != nil {
+		return err
+	}
+
 	path, err := GetGlobalConfigPath()
 	if err != nil {
 		return fmt.Errorf("failed to get global config path: %w", err)
@@ -128,11 +177,8 @@ func SaveGlobalConfig(cfg GlobalConfig) error {
 		return fmt.Errorf("failed to marshal global config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := atomicWriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write global config file %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0600); err != nil {
-		return fmt.Errorf("failed to set permissions on global config file %s: %w", path, err)
 	}
 	return nil
 }
@@ -151,13 +197,22 @@ func FindLocalConfig() (*LocalConfig, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to get current working directory: %w", err)
 	}
+	return FindLocalConfigFrom(currDir)
+}
 
+// FindLocalConfigFrom searches for .mpvt/config.json upwards starting from startDir
+func FindLocalConfigFrom(startDir string) (*LocalConfig, string, error) {
+	currDir := startDir
 	var homeDir string
 	if h, err := os.UserHomeDir(); err == nil {
 		homeDir = filepath.Clean(h)
 	}
 
-	for {
+	const maxTraversalDepth = 25
+	depth := 0
+
+	for depth < maxTraversalDepth {
+		depth++
 		cleanCurr := filepath.Clean(currDir)
 		candidateDir := filepath.Join(cleanCurr, LocalDirName)
 		candidateFile := filepath.Join(candidateDir, LocalConfigFile)
@@ -189,7 +244,7 @@ func FindLocalConfig() (*LocalConfig, string, error) {
 	return nil, "", nil
 }
 
-// SaveLocalConfig writes .mpvt/config.json in the specified or current directory
+// SaveLocalConfig writes .mpvt/config.json in the specified or current directory atomically
 func SaveLocalConfig(dir string, local LocalConfig) error {
 	if dir == "" {
 		var err error
@@ -200,9 +255,10 @@ func SaveLocalConfig(dir string, local LocalConfig) error {
 	}
 
 	mpvtDir := filepath.Join(dir, LocalDirName)
-	if err := os.MkdirAll(mpvtDir, 0755); err != nil {
+	if err := os.MkdirAll(mpvtDir, 0700); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", mpvtDir, err)
 	}
+	_ = os.Chmod(mpvtDir, 0700)
 
 	data, err := json.MarshalIndent(local, "", "  ")
 	if err != nil {
@@ -210,7 +266,7 @@ func SaveLocalConfig(dir string, local LocalConfig) error {
 	}
 
 	filePath := filepath.Join(mpvtDir, LocalConfigFile)
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
+	if err := atomicWriteFile(filePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write local config to %s: %w", filePath, err)
 	}
 	return nil

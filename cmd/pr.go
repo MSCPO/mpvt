@@ -120,6 +120,9 @@ var prCreateCmd = &cobra.Command{
 			if err := json.Unmarshal(fileData, &patchData); err != nil {
 				return fmt.Errorf("invalid patch JSON: %w", err)
 			}
+			if len(patchData.Blocks) > 1000 {
+				return fmt.Errorf("patch file %s contains %d blocks, exceeding maximum allowed limit of 1000", prCreatePatchFile, len(patchData.Blocks))
+			}
 		} else {
 			// Fetch existing concept doc
 			currentDoc, err := apiClient.GetConcept(cmd.Context(), local.ProjectId)
@@ -138,7 +141,7 @@ var prCreateCmd = &cobra.Command{
 			}
 
 			newBlock := api.ConceptBlock{
-				Id:   fmt.Sprintf("b-%d", len(currentDoc.Blocks)+1),
+				Id:   currentDoc.NextBlockID(),
 				Type: "paragraph",
 				Text: newBlockText,
 			}

@@ -1,0 +1,200 @@
+name: CI & Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test & Quality (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+          cache: true
+
+      - name: Verify Code Formatting
+        if: runner.os == 'Linux'
+        run: |
+          DIFF=$(gofmt -s -d .)
+          if [ -n "$DIFF" ]; then
+            echo "Formatting issues detected:"
+            echo "$DIFF"
+            exit 1
+          fi
+
+      - name: Run Static Analysis (go vet)
+        run: go vet ./...
+
+      - name: Run Unit Tests with Race Detector (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out
+
+      - name: Run Unit Tests (macOS & Windows)
+        if: runner.os != 'Linux'
+        run: go test -v ./...
+
+      - name: Upload Coverage Report
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage-report
+          path: coverage.out
+          retention-days: 14
+
+  build-artifacts:
+    name: Build (${{ matrix.os }}/${{ matrix.arch }})
+    needs: [test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            binary_name: mpvt
+            archive_ext: tar.gz
+          - os: linux
+            arch: arm64
+            binary_name: mpvt
+            archive_ext: tar.gz
+          - os: darwin
+            arch: amd64
+            binary_name: mpvt
+            archive_ext: tar.gz
+          - os: darwin
+            arch: arm64
+            binary_name: mpvt
+            archive_ext: tar.gz
+          - os: windows
+            arch: amd64
+            binary_name: mpvt.exe
+            archive_ext: zip
+          - os: windows
+            arch: arm64
+            binary_name: mpvt.exe
+            archive_ext: zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+          cache: true
+
+      - name: Determine Version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VER="${GITHUB_REF_NAME}"
+          else
+            VER="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "VERSION=${VER}" >> "$GITHUB_OUTPUT"
+          echo "BUILD_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Compile Binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p bin
+          go build -trimpath \
+            -ldflags="-s -w -X mpvt/cmd.Version=${{ steps.version.outputs.VERSION }} -X mpvt/cmd.BuildDate=${{ steps.version.outputs.BUILD_DATE }}" \
+            -o bin/${{ matrix.binary_name }} .
+
+      - name: Package Binary Artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          PKG_NAME="mpvt_${{ steps.version.outputs.VERSION }}_${{ matrix.os }}_${{ matrix.arch }}"
+          STAGE_DIR="stage/${PKG_NAME}"
+          mkdir -p "${STAGE_DIR}"
+
+          cp bin/${{ matrix.binary_name }} "${STAGE_DIR}/"
+          [ -f README.md ] && cp README.md "${STAGE_DIR}/"
+
+          cd stage
+          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
+            zip -r "../dist/${PKG_NAME}.zip" "${PKG_NAME}"
+          else
+            tar -czvf "../dist/${PKG_NAME}.tar.gz" "${PKG_NAME}"
+          fi
+          cd ..
+
+          cd dist
+          sha256sum "${PKG_NAME}.${{ matrix.archive_ext }}" > "${PKG_NAME}.sha256"
+          cd ..
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpvt-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-artifacts]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-dist
+          merge-multiple: true
+
+      - name: Generate Unified Checksums
+        run: |
+          mkdir -p release-assets
+          cp all-dist/*.tar.gz all-dist/*.zip release-assets/ 2>/dev/null || true
+          cd release-assets
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

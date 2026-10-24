@@ -72,7 +72,8 @@ var logCmd = &cobra.Command{
 				fmt.Println()
 				fmt.Printf("    %s\n", ui.Bold(r.Title))
 				if r.Description != nil && *r.Description != "" {
-					descLines := strings.Split(*r.Description, "\n")
+					cleanDesc := strings.ReplaceAll(*r.Description, "\r\n", "\n")
+					descLines := strings.Split(cleanDesc, "\n")
 					for _, line := range descLines {
 						fmt.Printf("    %s\n", line)
 					}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"mpvt/internal/git"
 )
@@ -42,6 +43,20 @@ func TestEnsureGitIgnore(t *testing.T) {
 	}
 	if addedAgain {
 		t.Errorf("expected added=false when .gitignore already contained .mpvt/")
+	}
+
+	// Case 3: .gitignore exists with other content
+	dir3 := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir3, ".gitignore"), []byte("dist/\nnode_modules"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	added3, err := git.EnsureGitIgnore(dir3)
+	if err != nil || !added3 {
+		t.Fatalf("expected added=true for existing gitignore, got %v, err: %v", added3, err)
+	}
+	c3, _ := os.ReadFile(filepath.Join(dir3, ".gitignore"))
+	if !strings.Contains(string(c3), ".mpvt/\n") {
+		t.Errorf("expected .mpvt/ to be appended, got: %s", string(c3))
 	}
 }
 
@@ -160,4 +175,41 @@ func TestGitContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected error when context is cancelled, got nil")
 	}
+}
+
+func TestGetLastCommit_EmptyRepo(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v: %s", err, string(out))
+	}
+
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current working directory: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir to empty git dir: %v", err)
+	}
+
+	commit, err := git.GetLastCommit(context.Background())
+	if err != nil {
+		t.Fatalf("expected nil error for empty git repository, got: %v", err)
+	}
+	if commit != nil {
+		t.Errorf("expected nil commit for empty git repository, got: %+v", commit)
+	}
+}
+
+func TestGitContextVariations(t *testing.T) {
+	// 1. Nil context
+	_ = git.IsGitRepo(nil)
+
+	// 2. Context with existing deadline
+	ctxWithDeadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = git.IsGitRepo(ctxWithDeadline)
 }

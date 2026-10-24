@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -12,6 +14,7 @@ import (
 
 var (
 	loginToken         string
+	loginTokenStdin    bool
 	loginEndpoint      string
 	loginAuthURL       string
 	loginSiteKey       string
@@ -102,16 +105,50 @@ By default, this command launches a temporary local server, opens your web brows
 
 Alternatively, you can manually supply a Bearer token via --token.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// 0. Support reading token from stdin if --token-stdin is specified
+		if loginTokenStdin {
+			scanner := bufio.NewScanner(os.Stdin)
+			if scanner.Scan() {
+				loginToken = strings.TrimSpace(scanner.Text())
+			}
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("failed to read token from stdin: %w", err)
+			}
+			if loginToken == "" {
+				return fmt.Errorf("token read from stdin was empty")
+			}
+		}
+
 		// 1. Manual token/gateway mode if provided via flags
 		if loginToken != "" || loginInternalToken != "" {
+			if cmd.Flags().Changed("token") || cmd.Flags().Changed("internal-token") {
+				ui.Warning("Security notice: Passing tokens via command-line flags exposes them in process listings (ps aux) and shell history. Consider using environment variables (MPVT_TOKEN) or --token-stdin.")
+			}
 			if loginEndpoint != "" {
 				activeConfig.Global.Endpoint = strings.TrimRight(loginEndpoint, "/")
 			}
 			if loginToken != "" {
 				activeConfig.Global.Token = loginToken
+				if loginInternalToken == "" {
+					activeConfig.Global.InternalToken = "" // Clear internal token so Bearer works
+				}
+				if loginUserId == "" {
+					activeConfig.Global.UserId = ""
+				}
+				if loginUserEmail == "" {
+					activeConfig.Global.UserEmail = ""
+				}
+				if loginUserRole == "" {
+					activeConfig.Global.UserRole = ""
+				}
+				activeConfig.Global.UserName = ""
 			}
 			if loginInternalToken != "" {
 				activeConfig.Global.InternalToken = loginInternalToken
+				if loginToken == "" {
+					activeConfig.Global.Token = "" // Clear bearer token
+					activeConfig.Global.RefreshToken = ""
+				}
 			}
 			if loginUserId != "" {
 				activeConfig.Global.UserId = loginUserId
@@ -154,11 +191,14 @@ Alternatively, you can manually supply a Bearer token via --token.`,
 		// Save token and user details to global config
 		activeConfig.Global.Token = loginRes.AccessToken
 		activeConfig.Global.RefreshToken = loginRes.RefreshToken
+		activeConfig.Global.InternalToken = "" // Clear any lingering internal gateway token so Bearer is used
 		activeConfig.Global.AuthEndpoint = authURL
 		activeConfig.Global.UserId = loginRes.User.Id
 		activeConfig.Global.UserEmail = loginRes.User.Email
 		if loginRes.User.Name != nil {
 			activeConfig.Global.UserName = *loginRes.User.Name
+		} else {
+			activeConfig.Global.UserName = ""
 		}
 		activeConfig.Global.UserRole = loginRes.User.Role
 
@@ -213,6 +253,7 @@ func init() {
 	authLoginCmd.Flags().StringVarP(&loginAuthURL, "auth-url", "a", auth.DefaultAuthBaseURL, "MSCPO Auth Server URL")
 	authLoginCmd.Flags().StringVar(&loginSiteKey, "sitekey", auth.DefaultHCaptchaSiteKey, "hCaptcha sitekey")
 	authLoginCmd.Flags().StringVarP(&loginToken, "token", "t", "", "Direct Bearer JWT Token (bypasses browser)")
+	authLoginCmd.Flags().BoolVar(&loginTokenStdin, "token-stdin", false, "Read Bearer token from standard input")
 	authLoginCmd.Flags().StringVar(&loginInternalToken, "internal-token", "", "Internal Gateway Token (For development/microservice mode)")
 	authLoginCmd.Flags().StringVar(&loginUserId, "user-id", "", "User UUID (For gateway mode)")
 	authLoginCmd.Flags().StringVar(&loginUserEmail, "user-email", "", "User Email (For gateway mode)")

@@ -120,9 +120,16 @@ func (c *Client) do(req *http.Request, target any) error {
 	if err != nil {
 		return fmt.Errorf("HTTP request failed (%s %s): %w", req.Method, req.URL.String(), err)
 	}
-	defer resp.Body.Close()
+	var isErrorBody bool
+	defer func() {
+		if !isErrorBody {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512*1024))
+		}
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode >= 400 {
+		isErrorBody = true
 		limitedReader := io.LimitReader(resp.Body, 64*1024)
 		respBytes, err := io.ReadAll(limitedReader)
 		if err != nil {
@@ -513,7 +520,7 @@ func (c *Client) GetConceptBlame(ctx context.Context, projectID, file string) ([
 	}
 
 	var blames []ConceptBlame
-	if err := json.Unmarshal(raw.Data, &blames); err == nil && len(blames) > 0 {
+	if err := json.Unmarshal(raw.Data, &blames); err == nil {
 		return blames, nil
 	}
 
@@ -543,11 +550,51 @@ func (c *Client) GetConceptDocBlame(ctx context.Context, projectID string) (*Con
 	if err != nil {
 		return nil, err
 	}
-	var res ApiResponse[ConceptDoc]
-	if err := c.do(req, &res); err != nil {
+
+	var raw struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := c.do(req, &raw); err != nil {
 		return nil, err
 	}
-	return &res.Data, nil
+
+	trimmed := bytes.TrimSpace(raw.Data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return &ConceptDoc{Version: 1}, nil
+	}
+
+	// 1. If payload is a JSON object, decode as ConceptDoc
+	if trimmed[0] == '{' {
+		var doc ConceptDoc
+		if err := json.Unmarshal(trimmed, &doc); err == nil {
+			if doc.Version == 0 {
+				doc.Version = 1
+			}
+			return &doc, nil
+		}
+	}
+
+	// 2. If payload is a JSON array, decode as []ConceptBlock or []ConceptBlame
+	var blocks []ConceptBlock
+	if err := json.Unmarshal(trimmed, &blocks); err == nil {
+		return &ConceptDoc{Version: 1, Blocks: blocks}, nil
+	}
+
+	var blames []ConceptBlame
+	if err := json.Unmarshal(trimmed, &blames); err == nil {
+		result := make([]ConceptBlock, len(blames))
+		for i, b := range blames {
+			result[i] = ConceptBlock{
+				Id:          b.Id,
+				Type:        b.Type,
+				Text:        b.Text,
+				Attribution: b.Attribution,
+			}
+		}
+		return &ConceptDoc{Version: 1, Blocks: result}, nil
+	}
+
+	return nil, fmt.Errorf("failed to decode concept blame payload: incompatible format")
 }
 
 // ListConceptPRs queries concept change proposals (PRs)

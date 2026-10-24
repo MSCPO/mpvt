@@ -746,3 +746,543 @@ func TestRemainingClientEndpoints(t *testing.T) {
 	}
 	_ = recordsFiltered
 }
+
+func TestGetConceptBlame_EmptyArray(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/proj-empty/concept/blame", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data": []}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cfg := &config.Config{
+		Global: config.GlobalConfig{
+			Endpoint: server.URL,
+		},
+	}
+	client := api.NewClient(cfg)
+	blames, err := client.GetConceptBlame(context.Background(), "proj-empty", "")
+	if err != nil {
+		t.Fatalf("expected nil error on empty blame array, got: %v", err)
+	}
+	if len(blames) != 0 {
+		t.Errorf("expected 0 blames, got %d", len(blames))
+	}
+}
+
+func TestConceptDoc_NextBlockID(t *testing.T) {
+	var nilDoc *api.ConceptDoc
+	if id := nilDoc.NextBlockID(); id != "b-1" {
+		t.Errorf("expected b-1 for nil doc, got %s", id)
+	}
+
+	doc := &api.ConceptDoc{
+		Blocks: []api.ConceptBlock{
+			{Id: "b-1"},
+			{Id: "b-2"},
+			{Id: "custom-id"},
+		},
+	}
+	if id := doc.NextBlockID(); id != "b-3" {
+		t.Errorf("expected b-3, got %s", id)
+	}
+
+	docWithCollision := &api.ConceptDoc{
+		Blocks: []api.ConceptBlock{
+			{Id: "b-1"},
+			{Id: "b-3"},
+		},
+	}
+	if id := docWithCollision.NextBlockID(); id != "b-4" {
+		t.Errorf("expected b-4, got %s", id)
+	}
+}
+
+func TestGetConceptDocBlame_Polymorphic(t *testing.T) {
+	mux := http.NewServeMux()
+
+	// 1. Array response
+	mux.HandleFunc("/api/v1/projects/proj-arr/concept/blame", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data": [{"id": "b-arr-1", "type": "paragraph", "text": "Array text"}]}`))
+	})
+
+	// 2. Object response
+	mux.HandleFunc("/api/v1/projects/proj-obj/concept/blame", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data": {"version": 3, "blocks": [{"id": "b-obj-1", "type": "paragraph", "text": "Object text"}]}}`))
+	})
+
+	// 3. Null response
+	mux.HandleFunc("/api/v1/projects/proj-null/concept/blame", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data": null}`))
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cfg := &config.Config{
+		Global: config.GlobalConfig{Endpoint: server.URL},
+	}
+	client := api.NewClient(cfg)
+	ctx := context.Background()
+
+	// Test Array payload
+	docArr, err := client.GetConceptDocBlame(ctx, "proj-arr")
+	if err != nil {
+		t.Fatalf("GetConceptDocBlame with array payload failed: %v", err)
+	}
+	if len(docArr.Blocks) != 1 || docArr.Blocks[0].Id != "b-arr-1" {
+		t.Errorf("unexpected blocks from array: %+v", docArr.Blocks)
+	}
+
+	// Test Object payload
+	docObj, err := client.GetConceptDocBlame(ctx, "proj-obj")
+	if err != nil {
+		t.Fatalf("GetConceptDocBlame with object payload failed: %v", err)
+	}
+	if docObj.Version != 3 || len(docObj.Blocks) != 1 || docObj.Blocks[0].Id != "b-obj-1" {
+		t.Errorf("unexpected doc from object: %+v", docObj)
+	}
+
+	// Test Null payload
+	docNull, err := client.GetConceptDocBlame(ctx, "proj-null")
+	if err != nil {
+		t.Fatalf("GetConceptDocBlame with null payload failed: %v", err)
+	}
+	if len(docNull.Blocks) != 0 {
+		t.Errorf("expected empty blocks for null payload, got %d", len(docNull.Blocks))
+	}
+}
+
+func TestTypeIDMethods(t *testing.T) {
+	var nilProj *api.Project
+	if got := nilProj.ID(); got != "" {
+		t.Errorf("expected empty string for nil project, got %q", got)
+	}
+	proj := &api.Project{Id: "p-123"}
+	if got := proj.ID(); got != "p-123" {
+		t.Errorf("expected p-123, got %q", got)
+	}
+
+	var nilMs *api.Milestone
+	if got := nilMs.ID(); got != "" {
+		t.Errorf("expected empty string for nil milestone, got %q", got)
+	}
+	ms := &api.Milestone{Id: "m-456"}
+	if got := ms.ID(); got != "m-456" {
+		t.Errorf("expected m-456, got %q", got)
+	}
+
+	var nilRec *api.Record
+	if got := nilRec.ID(); got != "" {
+		t.Errorf("expected empty string for nil record, got %q", got)
+	}
+	rec := &api.Record{Id: "r-789"}
+	if got := rec.ID(); got != "r-789" {
+		t.Errorf("expected r-789, got %q", got)
+	}
+
+	var nilProp *api.Proposal
+	if got := nilProp.ID(); got != "" {
+		t.Errorf("expected empty string for nil proposal, got %q", got)
+	}
+	prop := &api.Proposal{Id: "pr-101"}
+	if got := prop.ID(); got != "pr-101" {
+		t.Errorf("expected pr-101, got %q", got)
+	}
+}
+
+func TestClient_RecordBindAndDelete(t *testing.T) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/api/v1/records/rec-1/bind", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			http.Error(w, "bad method", http.StatusBadRequest)
+			return
+		}
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+
+		msID, _ := body["milestoneId"].(string)
+		var msPtr *string
+		if msID != "" {
+			msPtr = &msID
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.ApiResponse[api.Record]{
+			Data: api.Record{
+				Id:          "rec-1",
+				Title:       "Updated Record",
+				MilestoneId: msPtr,
+			},
+		})
+	})
+
+	mux.HandleFunc("/api/v1/records/rec-del", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "bad method", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"success": true}`))
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cfg := &config.Config{
+		Global: config.GlobalConfig{Endpoint: server.URL},
+	}
+	client := api.NewClient(cfg)
+	ctx := context.Background()
+
+	// 1. Bind to milestone
+	recBound, err := client.BindRecord(ctx, "rec-1", "ms-target")
+	if err != nil {
+		t.Fatalf("BindRecord failed: %v", err)
+	}
+	if recBound.MilestoneId == nil || *recBound.MilestoneId != "ms-target" {
+		t.Errorf("expected milestoneId ms-target, got %+v", recBound.MilestoneId)
+	}
+
+	// 2. Unbind (empty milestoneID)
+	recUnbound, err := client.BindRecord(ctx, "rec-1", "")
+	if err != nil {
+		t.Fatalf("BindRecord unbind failed: %v", err)
+	}
+	if recUnbound.MilestoneId != nil {
+		t.Errorf("expected nil milestoneId after unbind, got %v", *recUnbound.MilestoneId)
+	}
+
+	// 3. Delete record
+	if err := client.DeleteRecord(ctx, "rec-del"); err != nil {
+		t.Fatalf("DeleteRecord failed: %v", err)
+	}
+}
+
+func TestClient_ProposalsAndConcept(t *testing.T) {
+	mux := http.NewServeMux()
+
+	// Proposals
+	mux.HandleFunc("/api/v1/projects/p-1/proposals", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			json.NewEncoder(w).Encode(api.ApiResponse[[]api.Proposal]{
+				Data: []api.Proposal{
+					{Id: "prop-1", Title: "Proposal 1", Status: "OPEN"},
+				},
+			})
+			return
+		}
+		if r.Method == http.MethodPost {
+			json.NewEncoder(w).Encode(api.ApiResponse[api.Proposal]{
+				Data: api.Proposal{
+					Id:     "prop-new",
+					Title:  "New Proposal",
+					Status: "OPEN",
+				},
+			})
+			return
+		}
+	})
+
+	mux.HandleFunc("/api/v1/proposals/prop-1/merge", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"success": true}`))
+	})
+
+	mux.HandleFunc("/api/v1/proposals/prop-1/close", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"success": true}`))
+	})
+
+	// Concept doc
+	mux.HandleFunc("/api/v1/projects/p-1/concept", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(api.ApiResponse[api.ConceptDoc]{
+			Data: api.ConceptDoc{
+				Version: 2,
+				Blocks: []api.ConceptBlock{
+					{Id: "b-1", Type: "paragraph", Text: "Hello Concept"},
+				},
+			},
+		})
+	})
+
+	// Concept Blame with query param
+	mux.HandleFunc("/api/v1/projects/p-1/concept/blame", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("file") == "incompatible" {
+			w.Write([]byte(`{"data": "invalid-string"}`))
+			return
+		}
+		if r.URL.Query().Get("file") == "as_doc" {
+			w.Write([]byte(`{"data": {"version": 1, "blocks": [{"id": "b-doc-1", "type": "header", "text": "Header"}]}}`))
+			return
+		}
+		if r.URL.Query().Get("file") == "null_payload" {
+			w.Write([]byte(`{"data": null}`))
+			return
+		}
+		json.NewEncoder(w).Encode(api.ApiResponse[[]api.ConceptBlame]{
+			Data: []api.ConceptBlame{
+				{Id: "b-1", Type: "paragraph", Text: "Blamed text"},
+			},
+		})
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cfg := &config.Config{
+		Global: config.GlobalConfig{Endpoint: server.URL},
+	}
+	client := api.NewClient(cfg)
+	ctx := context.Background()
+
+	// 1. ListProposals
+	props, err := client.ListProposals(ctx, "p-1", "OPEN")
+	if err != nil {
+		t.Fatalf("ListProposals failed: %v", err)
+	}
+	if len(props) != 1 || props[0].Id != "prop-1" {
+		t.Errorf("unexpected proposals: %+v", props)
+	}
+
+	// 2. CreateProposal
+	newProp, err := client.CreateProposal(ctx, "p-1", "New Title", "Desc", api.PatchData{})
+	if err != nil {
+		t.Fatalf("CreateProposal failed: %v", err)
+	}
+	if newProp.Id != "prop-new" {
+		t.Errorf("expected prop-new, got %s", newProp.Id)
+	}
+
+	// 3. MergeProposal & CloseProposal
+	if err := client.MergeProposal(ctx, "prop-1"); err != nil {
+		t.Fatalf("MergeProposal failed: %v", err)
+	}
+	if err := client.CloseProposal(ctx, "prop-1"); err != nil {
+		t.Fatalf("CloseProposal failed: %v", err)
+	}
+
+	// 4. GetConcept
+	doc, err := client.GetConcept(ctx, "p-1")
+	if err != nil {
+		t.Fatalf("GetConcept failed: %v", err)
+	}
+	if doc.Version != 2 || len(doc.Blocks) != 1 {
+		t.Errorf("unexpected concept doc: %+v", doc)
+	}
+
+	// 5. GetConceptBlame (array format)
+	blames, err := client.GetConceptBlame(ctx, "p-1", "README.md")
+	if err != nil {
+		t.Fatalf("GetConceptBlame failed: %v", err)
+	}
+	if len(blames) != 1 || blames[0].Id != "b-1" {
+		t.Errorf("unexpected blames: %+v", blames)
+	}
+
+	// 6. GetConceptBlame (doc format fallback)
+	blamesDoc, err := client.GetConceptBlame(ctx, "p-1", "as_doc")
+	if err != nil {
+		t.Fatalf("GetConceptBlame doc format failed: %v", err)
+	}
+	if len(blamesDoc) != 1 || blamesDoc[0].Id != "b-doc-1" {
+		t.Errorf("unexpected blames from doc: %+v", blamesDoc)
+	}
+
+	// 7. GetConceptBlame (incompatible format)
+	_, err = client.GetConceptBlame(ctx, "p-1", "incompatible")
+	if err == nil {
+		t.Fatalf("expected error for incompatible payload, got nil")
+	}
+
+	// 8. GetConceptBlame (null payload)
+	blamesNull, err := client.GetConceptBlame(ctx, "p-1", "null_payload")
+	if err != nil {
+		t.Fatalf("GetConceptBlame null payload failed: %v", err)
+	}
+	if blamesNull != nil {
+		t.Errorf("expected nil blames, got %+v", blamesNull)
+	}
+}
+
+func TestNextBlockID_EdgeCases(t *testing.T) {
+	var nilDoc *api.ConceptDoc
+	if id := nilDoc.NextBlockID(); id != "b-1" {
+		t.Errorf("expected b-1 for nil doc, got %s", id)
+	}
+
+	emptyDoc := &api.ConceptDoc{Blocks: []api.ConceptBlock{}}
+	if id := emptyDoc.NextBlockID(); id != "b-1" {
+		t.Errorf("expected b-1 for empty blocks, got %s", id)
+	}
+
+	docWithBlocks := &api.ConceptDoc{
+		Blocks: []api.ConceptBlock{
+			{Id: "b-1"},
+			{Id: "b-2"},
+			{Id: "custom-id"},
+		},
+	}
+	if id := docWithBlocks.NextBlockID(); id != "b-3" {
+		t.Errorf("expected b-3, got %s", id)
+	}
+}
+
+func TestClient_AllMethods_ServerError(t *testing.T) {
+	errServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"code": "INTERNAL_ERROR", "message": "server error"}`))
+	}))
+	defer errServer.Close()
+
+	cfg := &config.Config{
+		Global: config.GlobalConfig{Endpoint: errServer.URL},
+	}
+	client := api.NewClient(cfg)
+	ctx := context.Background()
+
+	// Verify that every method returns error cleanly when backend fails
+	if _, err := client.Health(ctx); err == nil {
+		t.Errorf("expected error from Health")
+	}
+	if _, err := client.SearchUsers(ctx, "query"); err == nil {
+		t.Errorf("expected error from SearchUsers")
+	}
+	if _, err := client.ListProjects(ctx); err == nil {
+		t.Errorf("expected error from ListProjects")
+	}
+	if _, err := client.ListProjectsPaged(ctx, 1, 10, "", ""); err == nil {
+		t.Errorf("expected error from ListProjectsPaged")
+	}
+	if _, err := client.GetProject(ctx, "p1"); err == nil {
+		t.Errorf("expected error from GetProject")
+	}
+	if _, err := client.CreateProject(ctx, api.CreateProjectRequest{Title: "P"}); err == nil {
+		t.Errorf("expected error from CreateProject")
+	}
+	if _, err := client.UpdateProject(ctx, "p1", api.UpdateProjectRequest{}); err == nil {
+		t.Errorf("expected error from UpdateProject")
+	}
+	if _, err := client.UpdateProjectStatus(ctx, "p1", "IN_DEVELOPMENT"); err == nil {
+		t.Errorf("expected error from UpdateProjectStatus")
+	}
+	if _, err := client.ListMembers(ctx, "p1"); err == nil {
+		t.Errorf("expected error from ListMembers")
+	}
+	if _, err := client.ListMilestones(ctx, "p1"); err == nil {
+		t.Errorf("expected error from ListMilestones")
+	}
+	if _, err := client.GetMilestone(ctx, "p1", "m1"); err == nil {
+		t.Errorf("expected error from GetMilestone")
+	}
+	if _, err := client.CreateMilestone(ctx, "p1", api.CreateMilestoneRequest{Title: "M"}); err == nil {
+		t.Errorf("expected error from CreateMilestone")
+	}
+	if _, err := client.UpdateMilestone(ctx, "p1", "m1", api.UpdateMilestoneRequest{}); err == nil {
+		t.Errorf("expected error from UpdateMilestone")
+	}
+	if _, err := client.ListRecords(ctx, "p1", 1, 10); err == nil {
+		t.Errorf("expected error from ListRecords")
+	}
+	if _, err := client.ListRecordsWithFilter(ctx, "p1", "q", "m1", 1, 10); err == nil {
+		t.Errorf("expected error from ListRecordsWithFilter")
+	}
+	if _, err := client.GetRecord(ctx, "p1", "r1"); err == nil {
+		t.Errorf("expected error from GetRecord")
+	}
+	if _, err := client.CreateRecord(ctx, "p1", api.CreateRecordRequest{Title: "R"}); err == nil {
+		t.Errorf("expected error from CreateRecord")
+	}
+	if err := client.BindRecordMilestone(ctx, "p1", "r1", "m1"); err == nil {
+		t.Errorf("expected error from BindRecordMilestone")
+	}
+	if _, err := client.BindRecord(ctx, "r1", "m1"); err == nil {
+		t.Errorf("expected error from BindRecord")
+	}
+	if err := client.DeleteRecord(ctx, "r1"); err == nil {
+		t.Errorf("expected error from DeleteRecord")
+	}
+	if _, err := client.GetConcept(ctx, "p1"); err == nil {
+		t.Errorf("expected error from GetConcept")
+	}
+	if _, err := client.GetConceptDocBlame(ctx, "p1"); err == nil {
+		t.Errorf("expected error from GetConceptDocBlame")
+	}
+	if _, err := client.ListConceptPRs(ctx, "p1", "OPEN"); err == nil {
+		t.Errorf("expected error from ListConceptPRs")
+	}
+	if _, err := client.GetConceptPR(ctx, "p1", "pr1"); err == nil {
+		t.Errorf("expected error from GetConceptPR")
+	}
+	if _, err := client.CreateConceptPR(ctx, "p1", api.CreateConceptPRRequest{Title: "PR"}); err == nil {
+		t.Errorf("expected error from CreateConceptPR")
+	}
+	if err := client.MergeProposal(ctx, "pr1"); err == nil {
+		t.Errorf("expected error from MergeProposal")
+	}
+	if err := client.CloseProposal(ctx, "pr1"); err == nil {
+		t.Errorf("expected error from CloseProposal")
+	}
+}
+
+func TestClient_NewRequestAndErrorParsing(t *testing.T) {
+	mux := http.NewServeMux()
+
+	// 1. Direct APIError response
+	mux.HandleFunc("/api/v1/projects/direct-err", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"code": "FORBIDDEN", "message": "access denied"}`))
+	})
+
+	// 2. Plaintext 502 Bad Gateway
+	mux.HandleFunc("/api/v1/projects/plain-err", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("502 Bad Gateway"))
+	})
+
+	// 3. API endpoint with /api/v1 suffix handling
+	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data": []}`))
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Client with Gateway internal token but no user role (defaults to USER)
+	cfg := &config.Config{
+		Global: config.GlobalConfig{
+			Endpoint:      server.URL + "/api/v1",
+			InternalToken: "gw-token",
+			UserId:        "u-gw-1",
+			UserEmail:     "gw@example.com",
+		},
+	}
+	client := api.NewClient(cfg)
+	ctx := context.Background()
+
+	// Verify /projects resolution with /api/v1 BaseURL suffix
+	if _, err := client.ListProjects(ctx); err != nil {
+		t.Fatalf("ListProjects with /api/v1 suffix failed: %v", err)
+	}
+
+	// Test direct APIError response
+	if _, err := client.GetProject(ctx, "direct-err"); err == nil {
+		t.Errorf("expected error for direct-err")
+	}
+
+	// Test plaintext error response
+	if _, err := client.GetProject(ctx, "plain-err"); err == nil {
+		t.Errorf("expected error for plain-err")
+	}
+}

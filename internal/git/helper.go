@@ -49,11 +49,15 @@ func GetLastCommit(ctx context.Context) (*CommitInfo, error) {
 
 	// Format: %H%x00%s%x00%b%x00%an%x00%ae
 	cmd := exec.CommandContext(c, "git", "log", "-1", "--pretty=format:%H%x00%s%x00%b%x00%an%x00%ae")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
+		if strings.Contains(errMsg, "does not have any commits") || strings.Contains(errMsg, "unknown revision") || strings.Contains(errMsg, "尚无任何提交") {
+			return nil, nil
+		}
 		if errMsg != "" {
 			return nil, fmt.Errorf("git log failed: %s (%w)", errMsg, err)
 		}

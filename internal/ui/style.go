@@ -94,14 +94,14 @@ func FormatProposalBadge(status string) string {
 	}
 }
 
-// ShortID returns safely truncated ID up to maxLen bytes
+// ShortID returns safely truncated ID up to maxLen runes (UTF-8 safe)
 func ShortID(id string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""
 	}
-	if len(id) <= maxLen {
+	runes := []rune(id)
+	if len(runes) <= maxLen {
 		return id
 	}
-	return id[:maxLen]
+	return string(runes[:maxLen])
 }
-

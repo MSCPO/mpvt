@@ -151,6 +151,33 @@ type ConceptDoc struct {
 	Blocks  []ConceptBlock `json:"blocks"`
 }
 
+// NextBlockID generates a unique block ID (e.g. b-1, b-2) avoiding collisions with existing blocks
+func (doc *ConceptDoc) NextBlockID() string {
+	if doc == nil || len(doc.Blocks) == 0 {
+		return "b-1"
+	}
+	existingIDs := make(map[string]bool, len(doc.Blocks))
+	maxIdx := 0
+	for _, b := range doc.Blocks {
+		existingIDs[b.Id] = true
+		var idx int
+		if _, err := fmt.Sscanf(b.Id, "b-%d", &idx); err == nil && idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+
+	candidate := maxIdx + 1
+	if candidate < 1 {
+		candidate = 1
+	}
+	newID := fmt.Sprintf("b-%d", candidate)
+	for existingIDs[newID] {
+		candidate++
+		newID = fmt.Sprintf("b-%d", candidate)
+	}
+	return newID
+}
+
 type Proposal struct {
 	Id          string     `json:"id"`
 	ProjectId   string     `json:"projectId"`

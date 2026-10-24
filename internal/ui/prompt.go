@@ -65,7 +65,7 @@ func PromptText(label, defaultValue string) (string, error) {
 	return input, nil
 }
 
-// PromptMultiline prompts for multi-line text input until an empty line is entered
+// PromptMultiline prompts for multi-line text input until an empty line is entered twice
 func PromptMultiline(label string) (string, error) {
 	if !IsInteractive() {
 		return "", fmt.Errorf("interactive multiline prompt requested for %q in non-interactive environment; please supply the content via flags or file", label)
@@ -74,18 +74,38 @@ func PromptMultiline(label string) (string, error) {
 	fmt.Printf("%s %s %s:\n", Cyan("?"), Bold(label), Dim("(Press Enter twice or leave blank to finish)"))
 
 	var lines []string
+	consecutiveEmpty := 0
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				trimmed := strings.TrimRight(line, "\r\n")
+				if trimmed != "" {
+					lines = append(lines, trimmed)
+				}
+				if len(lines) > 0 {
+					break
+				}
+				return "", nil
+			}
 			return "", err
 		}
 		trimmed := strings.TrimRight(line, "\r\n")
-		if trimmed == "" && len(lines) > 0 {
-			break
+		if trimmed == "" {
+			consecutiveEmpty++
+			if len(lines) == 0 {
+				return "", nil
+			}
+			if consecutiveEmpty >= 2 {
+				break
+			}
+			continue
 		}
-		if trimmed == "" && len(lines) == 0 {
-			return "", nil
+
+		for i := 0; i < consecutiveEmpty; i++ {
+			lines = append(lines, "")
 		}
+		consecutiveEmpty = 0
 		lines = append(lines, trimmed)
 	}
 
@@ -143,4 +163,3 @@ func PromptSelect(label string, items []string) (int, string, error) {
 		fmt.Printf("%s Please enter a number between 1 and %d\n", Red("!"), len(items))
 	}
 }
-

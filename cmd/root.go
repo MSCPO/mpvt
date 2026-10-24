@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"mpvt/internal/api"
@@ -47,11 +48,16 @@ track project milestones, manage concept proposals, and inspect vitals history.`
 
 		apiClient = api.NewClient(activeConfig)
 
-		if flagProject != "" {
+		cmdName := cmd.Name()
+		isAuthCmd := cmdName == "whoami" || (cmd.Parent() != nil && cmd.Parent().Name() == "auth")
+		isOfflineCmd := isAuthCmd || cmdName == "version" || cmdName == "help" || cmdName == "completion" || cmdName == "logout" || cmdName == "login" || cmdName == "init" || cmdName == "link" || cmdName == "unlink"
+		if flagProject != "" && !isOfflineCmd {
 			if activeConfig.Local == nil {
 				activeConfig.Local = &config.LocalConfig{}
 			}
-			proj, err := apiClient.GetProject(cmd.Context(), flagProject)
+			resolveCtx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+			defer cancel()
+			proj, err := apiClient.GetProject(resolveCtx, flagProject)
 			if err != nil {
 				return fmt.Errorf("failed to resolve project %q: %w", flagProject, err)
 			}
@@ -65,6 +71,26 @@ track project milestones, manage concept proposals, and inspect vitals history.`
 
 		return nil
 	},
+}
+
+// SetApiClient configures or overrides the active API client (useful for dependency injection and tests)
+func SetApiClient(c *api.Client) {
+	apiClient = c
+}
+
+// GetApiClient returns the current active API client
+func GetApiClient() *api.Client {
+	return apiClient
+}
+
+// SetActiveConfig sets or overrides the active configuration
+func SetActiveConfig(cfg *config.Config) {
+	activeConfig = cfg
+}
+
+// GetActiveConfig returns the current active configuration
+func GetActiveConfig() *config.Config {
+	return activeConfig
 }
 
 var whoamiCmd = &cobra.Command{

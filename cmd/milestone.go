@@ -149,7 +149,7 @@ var milestoneUseCmd = &cobra.Command{
 		var selectedTitle string
 		found := false
 		for _, m := range milestones {
-			if m.Id == targetID || (len(targetID) >= 8 && strings.HasPrefix(m.Id, targetID)) {
+			if strings.EqualFold(m.Id, targetID) || (len(targetID) >= 8 && strings.HasPrefix(strings.ToLower(m.Id), strings.ToLower(targetID))) {
 				targetID = m.Id
 				selectedTitle = m.Title
 				found = true

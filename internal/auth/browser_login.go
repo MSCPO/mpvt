@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,9 @@ import (
 	"strings"
 	"time"
 )
+
+//go:embed login.html
+var loginHTMLTemplate string
 
 const (
 	DefaultHCaptchaSiteKey = "c3a057be-fd54-428a-8908-d98825741c5a"
@@ -66,8 +70,8 @@ func OpenBrowser(rawURL string) error {
 
 	switch runtime.GOOS {
 	case "windows":
-		cmd = "rundll32"
-		args = []string{"url.dll,FileProtocolHandler", validURL}
+		cmd = "cmd"
+		args = []string{"/c", "start", "", validURL}
 	case "darwin":
 		cmd = "open"
 		args = []string{validURL}
@@ -76,7 +80,12 @@ func OpenBrowser(rawURL string) error {
 		args = []string{validURL}
 	}
 
-	return exec.Command(cmd, args...).Start()
+	c := exec.Command(cmd, args...)
+	if err := c.Start(); err != nil {
+		return err
+	}
+	go func() { _ = c.Wait() }()
+	return nil
 }
 
 func generateStateToken() (string, error) {
@@ -98,6 +107,16 @@ func buildAuthHandler(ctx context.Context, authBaseURL, siteKey, expectedState s
 
 	escapedSiteKey := html.EscapeString(siteKey)
 	escapedState := html.EscapeString(expectedState)
+
+	proxyClient := &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			MaxIdleConns:        10,
+			IdleConnTimeout:     30 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+	}
 
 	// 1. Serve Login Webpage
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -164,8 +183,7 @@ func buildAuthHandler(ctx context.Context, authBaseURL, siteKey, expectedState s
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "application/json")
 
-		client := &http.Client{Timeout: 15 * time.Second}
-		resp, err := client.Do(httpReq)
+		resp, err := proxyClient.Do(httpReq)
 		if err != nil {
 			writeJSONError(w, http.StatusBadGateway, "无法连接到认证服务器: "+err.Error())
 			return
@@ -237,6 +255,15 @@ func StartBrowserLogin(ctx context.Context, authBaseURL, siteKey string) (*Login
 		authBaseURL = DefaultAuthBaseURL
 	}
 	authBaseURL = strings.TrimRight(authBaseURL, "/")
+
+	parsedAuthURL, err := url.Parse(authBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid auth URL %q: %w", authBaseURL, err)
+	}
+	isLocal := parsedAuthURL.Hostname() == "127.0.0.1" || parsedAuthURL.Hostname() == "localhost"
+	if parsedAuthURL.Scheme != "https" && !isLocal {
+		return nil, fmt.Errorf("insecure auth URL %q: HTTPS is required for authentication endpoints", authBaseURL)
+	}
 
 	if siteKey == "" {
 		siteKey = DefaultHCaptchaSiteKey
@@ -328,265 +355,6 @@ func writeJSONError(w http.ResponseWriter, code int, msg string) {
 }
 
 func renderLoginPage(siteKey, state string) string {
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>登录 - MSCPO ProjectVitals CLI</title>
-  <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
-  <style>
-    :root {
-      --bg: #0d1117;
-      --card-bg: #161b22;
-      --border: #30363d;
-      --text: #f0f6fc;
-      --text-muted: #8b949e;
-      --accent: #238636;
-      --accent-hover: #2ea043;
-      --error: #f85149;
-      --error-bg: rgba(248, 81, 73, 0.15);
-      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    }
-    @media (prefers-color-scheme: light) {
-      :root {
-        --bg: #f6f8fa;
-        --card-bg: #ffffff;
-        --border: #d0d7de;
-        --text: #1f2328;
-        --text-muted: #656d76;
-        --accent: #1f883d;
-        --accent-hover: #1a7f37;
-        --error: #cf222e;
-        --error-bg: #ffebe9;
-      }
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      padding: 20px;
-    }
-    .card {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 36px 32px;
-      width: 100%%;
-      max-width: 420px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-    }
-    .logo-badge {
-      display: inline-block;
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--accent);
-      background: rgba(35, 134, 54, 0.15);
-      padding: 4px 10px;
-      border-radius: 20px;
-      margin-bottom: 16px;
-    }
-    h1 {
-      font-size: 22px;
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
-    p.subtitle {
-      font-size: 14px;
-      color: var(--text-muted);
-      margin-bottom: 24px;
-    }
-    .form-group {
-      margin-bottom: 18px;
-      text-align: left;
-    }
-    label {
-      display: block;
-      font-size: 13px;
-      font-weight: 500;
-      margin-bottom: 6px;
-    }
-    input[type="email"], input[type="password"] {
-      width: 100%%;
-      padding: 10px 12px;
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      font-size: 14px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    input[type="email"]:focus, input[type="password"]:focus {
-      border-color: #58a6ff;
-    }
-    .captcha-wrap {
-      display: flex;
-      justify-content: center;
-      margin: 20px 0 16px;
-    }
-    .btn {
-      width: 100%%;
-      padding: 11px;
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-    .btn:hover {
-      background: var(--accent-hover);
-    }
-    .btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-    .alert {
-      padding: 10px 14px;
-      border-radius: 6px;
-      font-size: 13px;
-      margin-bottom: 18px;
-      display: none;
-    }
-    .alert-error {
-      background: var(--error-bg);
-      color: var(--error);
-      border: 1px solid var(--error);
-      display: block;
-    }
-    .success-card {
-      text-align: center;
-      display: none;
-    }
-    .success-icon {
-      font-size: 48px;
-      color: var(--accent);
-      margin-bottom: 16px;
-    }
-  </style>
-</head>
-<body>
-  <div class="card" id="loginCard">
-    <div class="logo-badge">MSCPO ProjectVitals</div>
-    <h1>开发者身份登录</h1>
-    <p class="subtitle">登录后授权凭据将自动同步至终端 mpvt CLI</p>
-
-    <div id="alertBox" class="alert"></div>
-
-    <form id="loginForm">
-      <div class="form-group">
-        <label for="email">邮箱地址</label>
-        <input type="email" id="email" placeholder="developer@mscpo.org" required autofocus />
-      </div>
-
-      <div class="form-group">
-        <label for="password">密码</label>
-        <input type="password" id="password" placeholder="请输入密码" required />
-      </div>
-
-      <div class="captcha-wrap">
-        <div class="h-captcha" data-sitekey="%s" data-callback="onCaptchaVerified"></div>
-      </div>
-
-      <input type="hidden" id="csrfState" value="%s" />
-
-      <button type="submit" class="btn" id="submitBtn">登录并授权 CLI</button>
-    </form>
-  </div>
-
-  <div class="card success-card" id="successCard">
-    <div class="success-icon">✔</div>
-    <h1>登录成功！</h1>
-    <p class="subtitle" id="userGreeting">欢迎回来</p>
-    <p style="font-size: 14px; color: var(--text-muted); margin-top: 12px;">
-      认证凭证已成功同步至终端，您可以关闭此浏览器标签页。
-    </p>
-  </div>
-
-  <script>
-    let captchaToken = '';
-
-    window.onCaptchaVerified = function(token) {
-      captchaToken = token;
-      hideError();
-    };
-
-    function showError(msg) {
-      const box = document.getElementById('alertBox');
-      box.textContent = msg;
-      box.className = 'alert alert-error';
-    }
-
-    function hideError() {
-      const box = document.getElementById('alertBox');
-      box.className = 'alert';
-      box.textContent = '';
-    }
-
-    document.getElementById('loginForm').addEventListener('submit', async function(e) {
-      e.preventDefault();
-      hideError();
-
-      const email = document.getElementById('email').value.trim();
-      const password = document.getElementById('password').value;
-      const state = document.getElementById('csrfState').value;
-
-      if (!email || !password) {
-        showError('请输入完整的邮箱与密码');
-        return;
-      }
-
-      if (!captchaToken) {
-        showError('请完成上方 hCaptcha 人机验证');
-        return;
-      }
-
-      const btn = document.getElementById('submitBtn');
-      btn.disabled = true;
-      btn.textContent = '登录中...';
-
-      try {
-        const resp = await fetch('/submit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password, hCaptchaToken: captchaToken, state: state })
-        });
-
-        const data = await resp.json();
-
-        if (!resp.ok || !data.success) {
-          throw new Error(data.message || '登录失败，请检查账号密码');
-        }
-
-        // Show success screen
-        document.getElementById('loginCard').style.display = 'none';
-        const successCard = document.getElementById('successCard');
-        successCard.style.display = 'block';
-
-        const greeting = document.getElementById('userGreeting');
-        if (data.user && data.user.email) {
-          greeting.textContent = '欢迎回来，' + (data.user.name || data.user.email);
-        }
-      } catch (err) {
-        showError(err.message);
-        if (window.hcaptcha) {
-          window.hcaptcha.reset();
-        }
-        captchaToken = '';
-      } finally {
-        btn.disabled = false;
-        btn.textContent = '登录并授权 CLI';
-      }
-    });
-  </script>
-</body>
-</html>`, siteKey, state)
+	content := strings.Replace(loginHTMLTemplate, "{{SITE_KEY}}", siteKey, 1)
+	return strings.Replace(content, "{{STATE}}", state, 1)
 }

@@ -9,7 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -324,3 +327,102 @@ func TestOpenBrowserValidation(t *testing.T) {
 	}
 }
 
+func TestStartBrowserLogin_InsecureURLRejected(t *testing.T) {
+	_, err := StartBrowserLogin(context.Background(), "http://remote-server.com", "")
+	if err == nil {
+		t.Errorf("expected error when auth URL is insecure remote HTTP, got nil")
+	}
+}
+
+func TestBuildAuthHandler_EdgeCases(t *testing.T) {
+	expectedState := "csrf-token-abc"
+	resultChan := make(chan *LoginResult, 1)
+
+	// Mock remote server returning error
+	errorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"message": "invalid credentials"}`))
+	}))
+	defer errorServer.Close()
+
+	handler := buildAuthHandler(context.Background(), errorServer.URL, "sitekey-123", expectedState, 8080, resultChan)
+
+	// 1. Unknown path returns 404
+	req404 := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/unknown-path", nil)
+	req404.Host = "127.0.0.1:8080"
+	rec404 := httptest.NewRecorder()
+	handler.ServeHTTP(rec404, req404)
+	if rec404.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown path, got %d", rec404.Code)
+	}
+
+	// 2. Submit with wrong method (GET) returns 405
+	req405 := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/submit", nil)
+	req405.Host = "127.0.0.1:8080"
+	rec405 := httptest.NewRecorder()
+	handler.ServeHTTP(rec405, req405)
+	if rec405.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET /submit, got %d", rec405.Code)
+	}
+
+	// 3. Submit with malformed JSON returns 400
+	reqBadJSON := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/submit", strings.NewReader("not a json"))
+	reqBadJSON.Host = "127.0.0.1:8080"
+	reqBadJSON.Header.Set("Content-Type", "application/json")
+	recBadJSON := httptest.NewRecorder()
+	handler.ServeHTTP(recBadJSON, reqBadJSON)
+	if recBadJSON.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for malformed json, got %d", recBadJSON.Code)
+	}
+
+	// 4. Missing email/password returns 400
+	reqMissingEmail := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/submit", strings.NewReader(`{"state":"csrf-token-abc","email":"","password":""}`))
+	reqMissingEmail.Host = "127.0.0.1:8080"
+	reqMissingEmail.Header.Set("Content-Type", "application/json")
+	recMissingEmail := httptest.NewRecorder()
+	handler.ServeHTTP(recMissingEmail, reqMissingEmail)
+	if recMissingEmail.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing email/password, got %d", recMissingEmail.Code)
+	}
+
+	// 5. Missing hCaptcha token returns 400
+	reqMissingCaptcha := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/submit", strings.NewReader(`{"state":"csrf-token-abc","email":"u@test.org","password":"pass"}`))
+	reqMissingCaptcha.Host = "127.0.0.1:8080"
+	reqMissingCaptcha.Header.Set("Content-Type", "application/json")
+	recMissingCaptcha := httptest.NewRecorder()
+	handler.ServeHTTP(recMissingCaptcha, reqMissingCaptcha)
+	if recMissingCaptcha.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing captcha, got %d", recMissingCaptcha.Code)
+	}
+
+	// 6. Remote server error response returns 401
+	reqAuthErr := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/submit", strings.NewReader(`{"state":"csrf-token-abc","email":"u@test.org","password":"pass","hCaptchaToken":"tok"}`))
+	reqAuthErr.Host = "127.0.0.1:8080"
+	reqAuthErr.Header.Set("Content-Type", "application/json")
+	recAuthErr := httptest.NewRecorder()
+	handler.ServeHTTP(recAuthErr, reqAuthErr)
+	if recAuthErr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 from remote server, got %d: %s", recAuthErr.Code, recAuthErr.Body.String())
+	}
+}
+
+func TestOpenBrowser_SuccessExecution(t *testing.T) {
+	tmpBin := t.TempDir()
+	binName := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		binName = "open"
+	} else if runtime.GOOS == "windows" {
+		binName = "cmd"
+	}
+	mockScript := filepath.Join(tmpBin, binName)
+	if err := os.WriteFile(mockScript, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", tmpBin+string(os.PathListSeparator)+origPath)
+
+	err := OpenBrowser("https://localhost:1234/test")
+	if runtime.GOOS != "windows" && err != nil {
+		t.Errorf("expected clean OpenBrowser execution, got: %v", err)
+	}
+}

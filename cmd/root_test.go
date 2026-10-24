@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/cobra"
+	"mpvt/internal/api"
 	"mpvt/internal/config"
 	"mpvt/internal/ui"
 )
@@ -43,6 +45,12 @@ func TestExecuteContextCancellation(t *testing.T) {
 	err := rootCmd.ExecuteContext(ctx)
 	// Some commands may return context.Canceled if context is checked
 	_ = err
+}
+
+func TestExecuteSuccess(t *testing.T) {
+	rootCmd.SetArgs([]string{"version"})
+	defer rootCmd.SetArgs([]string{})
+	Execute()
 }
 
 func TestMilestoneUse_SavesToLocalPath(t *testing.T) {
@@ -133,5 +141,133 @@ func TestOutputJSON(t *testing.T) {
 
 	if !bytes.Contains(buf.Bytes(), []byte(`"status": "ok"`)) {
 		t.Errorf("expected json output to contain status: ok, got: %s", buf.String())
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	flagJSON = true
+	defer func() { flagJSON = false }()
+
+	if err := versionCmd.RunE(versionCmd, []string{}); err != nil {
+		t.Fatalf("version command in JSON mode failed: %v", err)
+	}
+
+	flagJSON = false
+	if err := versionCmd.RunE(versionCmd, []string{}); err != nil {
+		t.Fatalf("version command failed: %v", err)
+	}
+}
+
+func TestOfflineCommand_SkipsRemoteProjectResolution(t *testing.T) {
+	// Setup isolated home
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	flagProject = "non-existent-project-xyz"
+	defer func() { flagProject = "" }()
+
+	offlineCmds := []*cobra.Command{versionCmd, authLoginCmd, initCmd, unlinkCmd}
+	for _, c := range offlineCmds {
+		err := rootCmd.PersistentPreRunE(c, []string{})
+		if err != nil {
+			t.Errorf("expected command %s to skip remote project resolution, got error: %v", c.Name(), err)
+		}
+	}
+}
+
+func TestAuthLogin_TokenStdin(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+
+	// Pipe token into stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStdin := os.Stdin
+	defer func() { os.Stdin = origStdin }()
+	os.Stdin = r
+
+	go func() {
+		defer w.Close()
+		_, _ = w.Write([]byte("mock-bearer-token-via-stdin\n"))
+	}()
+
+	loginTokenStdin = true
+	defer func() {
+		loginTokenStdin = false
+		loginToken = ""
+	}()
+
+	activeConfig = &config.Config{
+		Global: config.GlobalConfig{
+			InternalToken: "stale-internal-token",
+		},
+	}
+
+	if err := authLoginCmd.RunE(authLoginCmd, []string{}); err != nil {
+		t.Fatalf("auth login with token-stdin failed: %v", err)
+	}
+
+	if activeConfig.Global.Token != "mock-bearer-token-via-stdin" {
+		t.Errorf("expected token mock-bearer-token-via-stdin, got %s", activeConfig.Global.Token)
+	}
+	if activeConfig.Global.InternalToken != "" {
+		t.Errorf("expected internal token to be cleared when bearer token is saved, got %s", activeConfig.Global.InternalToken)
+	}
+}
+
+func TestAuthLogout(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+
+	activeConfig = &config.Config{
+		Global: config.GlobalConfig{
+			Token:         "token-to-clear",
+			InternalToken: "internal-to-clear",
+			UserId:        "user-to-clear",
+		},
+	}
+
+	if err := authLogoutCmd.RunE(authLogoutCmd, []string{}); err != nil {
+		t.Fatalf("auth logout failed: %v", err)
+	}
+
+	if activeConfig.Global.Token != "" || activeConfig.Global.InternalToken != "" || activeConfig.Global.UserId != "" {
+		t.Errorf("expected credentials to be cleared, got %+v", activeConfig.Global)
+	}
+}
+
+func TestGettersAndSetters(t *testing.T) {
+	oldClient := GetApiClient()
+	oldConfig := GetActiveConfig()
+	defer func() {
+		SetApiClient(oldClient)
+		SetActiveConfig(oldConfig)
+	}()
+
+	mockCfg := &config.Config{
+		Global: config.GlobalConfig{Endpoint: "https://test.mscpo.org"},
+	}
+	mockClient := api.NewClient(mockCfg)
+
+	SetActiveConfig(mockCfg)
+	if got := GetActiveConfig(); got != mockCfg {
+		t.Errorf("expected mockCfg, got %v", got)
+	}
+
+	SetApiClient(mockClient)
+	if got := GetApiClient(); got != mockClient {
+		t.Errorf("expected mockClient, got %v", got)
+	}
+}
+
+func TestOutputJSON_Error(t *testing.T) {
+	// Channels cannot be marshaled to JSON
+	err := outputJSON(make(chan int))
+	if err == nil {
+		t.Errorf("expected error when marshaling unsupported channel type, got nil")
 	}
 }

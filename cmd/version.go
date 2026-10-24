@@ -7,7 +7,7 @@ import (
 	"mpvt/internal/ui"
 )
 
-const (
+var (
 	Version   = "1.0.0"
 	BuildDate = "2026-10-18"
 )
