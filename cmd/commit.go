@@ -23,6 +23,7 @@ var (
 	commitMilestone   string
 	commitTime        string
 	commitFromGit     bool
+	commitAll         bool
 )
 
 func resetCommitFlags() {
@@ -31,6 +32,7 @@ func resetCommitFlags() {
 	commitMilestone = ""
 	commitTime = ""
 	commitFromGit = false
+	commitAll = false
 }
 
 var commitCmd = &cobra.Command{
@@ -38,7 +40,7 @@ var commitCmd = &cobra.Command{
 	Short: "Record and submit a non-code progress commit to ProjectVitals",
 	Long: `Record what you accomplished without leaking source code.
 Solves accountability and enables transparent progress tracking for developers.
-Supports automatic extraction from your local git commits via --from-git.`,
+Supports automatic extraction from your local git commits via --from-git or bulk import via --all.`,
 	PostRun: func(cmd *cobra.Command, args []string) {
 		resetCommitFlags()
 	},
@@ -46,6 +48,14 @@ Supports automatic extraction from your local git commits via --from-git.`,
 		local, err := activeConfig.EnsureProjectBound()
 		if err != nil {
 			return err
+		}
+
+		// 0. Delegate to bulk import if --all is specified
+		if commitAll {
+			if commitMilestone != "" {
+				importMilestone = commitMilestone
+			}
+			return runGitImport(cmd, args)
 		}
 
 		// 1. Resolve Git Commit if --from-git is specified
@@ -206,6 +216,7 @@ func init() {
 	commitCmd.Flags().StringVar(&commitMilestone, "milestone", "", "Milestone UUID to bind")
 	commitCmd.Flags().StringVar(&commitTime, "time", "", "Custom commit time (RFC3339 or 'YYYY-MM-DD HH:MM:SS')")
 	commitCmd.Flags().BoolVarP(&commitFromGit, "from-git", "g", false, "Auto-extract title and description from recent local git commit")
+	commitCmd.Flags().BoolVarP(&commitAll, "all", "a", false, "Import all git commits from repository into ProjectVitals")
 
 	rootCmd.AddCommand(commitCmd)
 }

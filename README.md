@@ -18,11 +18,13 @@ SPDX-License-Identifier: MPL-2.0
    - 解决闭源协作中“进度不透明、不知道谁做了什么”的管理痛点。
 2. **Git 仓库深度联动 (`--from-git`)**：
    - 自动提取本地仓库最近一次 `git commit` 的标题与说明，一键同步上报至 ProjectVitals。
-3. **工作区状态机管理 (`mpvt status`)**：
+3. **全量历史 Git 提交导入 (`mpvt import git` / `mpvt commit --all`)**：
+   - 一键将本地代码仓库的所有历史 Git 提交批量同步导入至 ProjectVitals，支持时间范围筛选（`--since`、`--until`）、作者筛选（`--author`）、分支版本筛选（`--rev`）、排除合并提交（`--no-merges`）、智能跳过已导入提交（`--skip-existing`）及导入预览（`--dry-run`）。
+4. **工作区状态机管理 (`mpvt status`)**：
    - 识别当前项目所属生命周期状态（`IN_DEVELOPMENT` 开发中 / `PUBLISHED` 已发布 / `PLANNING` 理论构想中 / `ARCHIVED` 归档锁死）。
-4. **里程碑与路线图绑定 (`mpvt milestone`)**：
+5. **里程碑与路线图绑定 (`mpvt milestone`)**：
    - 切换当前工作区的默认里程碑（`mpvt milestone use <id>`），后续 commit 自动归档关联。
-5. **构想修改提案与段落追溯 (`mpvt pr` & `mpvt blame`)**：
+6. **构想修改提案与段落追溯 (`mpvt pr` & `mpvt blame`)**：
    - 在 `PLANNING` 状态下支持类似 GitHub PR 的修改提案流与段落作者溯源。
 
 ---
@@ -75,9 +77,28 @@ mpvt commit --from-git
 
 # 方式 C：无参数交互式表单录入
 mpvt commit
+
+# 方式 D：批量全量导入本地仓库的所有 Git 提交
+mpvt commit --all
 ```
 
-### 5. 查看进度时间线 (`mpvt log`)
+### 5. 全量导入历史 Git 提交 (`mpvt import git`)
+为已有开发仓库补齐历史开发轨迹，支持预览、时间/作者/分支筛选与智能去重：
+```bash
+# 预览即将导入的 Git 提交列表（Dry run，不发起实际创建）
+mpvt import git --dry-run
+
+# 全量导入当前分支的全部 Git 提交（自动跳过已存在的记录）
+mpvt import git
+
+# 附带 Git Commit Hash 及作者信息至记录说明中
+mpvt import git --include-hash --include-author
+
+# 高级筛选：仅导入特定作者、指定日期以后的提交，并绑定至指定里程碑
+mpvt import git --since "2026-01-01" --author "CyanTea" --milestone <UUID> -y
+```
+
+### 6. 查看进度时间线 (`mpvt log`)
 ```bash
 # 查看完整时间线
 mpvt log
@@ -98,7 +119,8 @@ mpvt log --oneline -n 20
 | `mpvt init [slug]` | `link` | 关联当前目录与远端项目 |
 | `mpvt unlink` | - | 解除当前目录与远端项目的绑定 |
 | `mpvt status` | - | 查看当前项目生命周期、默认里程碑及最近动态 |
-| `mpvt commit` | - | 提交无代码修改记录 |
+| `mpvt commit` | - | 提交无代码修改记录（支持 `--from-git` 单条提取或 `--all` 批量导入） |
+| `mpvt import [git]` | `import-git`, `git-import` | **全量或条件批量导入本地 Git 提交至 ProjectVitals** |
 | `mpvt log` | `history` | 浏览进度提交历史时间线 |
 | `mpvt milestone list` | `ms ls` | 列出当前项目里程碑与路线图 |
 | `mpvt milestone use <id>` | - | 切换当前工作区的默认里程碑 |

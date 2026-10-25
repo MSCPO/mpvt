@@ -218,3 +218,108 @@ func TestGitContextVariations(t *testing.T) {
 	defer cancel()
 	_ = git.IsGitRepo(ctxWithDeadline)
 }
+
+func TestListCommits_EmptyRepo(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v: %s", err, string(out))
+	}
+
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current working directory: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir to empty git dir: %v", err)
+	}
+
+	commits, err := git.ListCommits(context.Background(), git.CommitFilter{})
+	if err != nil {
+		t.Fatalf("expected nil error for empty git repository, got: %v", err)
+	}
+	if len(commits) != 0 {
+		t.Errorf("expected 0 commits for empty git repository, got: %d", len(commits))
+	}
+}
+
+func TestListCommits_MultipleCommits(t *testing.T) {
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v: %s", strings.Join(args, " "), err, string(out))
+		}
+	}
+
+	runGit("init")
+	runGit("config", "user.name", "Alpha Developer")
+	runGit("config", "user.email", "alpha@example.com")
+	runGit("commit", "--allow-empty", "-m", "first commit\n\nfirst commit details")
+	runGit("commit", "--allow-empty", "-m", "second commit\n\nsecond commit details")
+	runGit("commit", "--allow-empty", "-m", "third commit")
+
+	origWd, _ := os.Getwd()
+	defer os.Chdir(origWd)
+	_ = os.Chdir(dir)
+
+	ctx := context.Background()
+
+	// 1. All commits, reverse (chronological: oldest first)
+	commits, err := git.ListCommits(ctx, git.CommitFilter{Reverse: true})
+	if err != nil {
+		t.Fatalf("ListCommits failed: %v", err)
+	}
+	if len(commits) != 3 {
+		t.Fatalf("expected 3 commits, got %d", len(commits))
+	}
+	if commits[0].Subject != "first commit" {
+		t.Errorf("expected first commit subject, got %s", commits[0].Subject)
+	}
+	if commits[0].Body != "first commit details" {
+		t.Errorf("expected first commit body, got %s", commits[0].Body)
+	}
+	if commits[0].AuthorName != "Alpha Developer" {
+		t.Errorf("expected author Alpha Developer, got %s", commits[0].AuthorName)
+	}
+	if commits[0].CommittedAt == nil {
+		t.Errorf("expected non-nil CommittedAt")
+	}
+	if commits[2].Subject != "third commit" {
+		t.Errorf("expected third commit subject, got %s", commits[2].Subject)
+	}
+
+	// 2. Limit 2
+	limited, err := git.ListCommits(ctx, git.CommitFilter{Limit: 2, Reverse: true})
+	if err != nil {
+		t.Fatalf("ListCommits with limit failed: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("expected 2 commits, got %d", len(limited))
+	}
+
+	// 3. Newest first (Reverse: false)
+	newestFirst, err := git.ListCommits(ctx, git.CommitFilter{Reverse: false})
+	if err != nil {
+		t.Fatalf("ListCommits newest first failed: %v", err)
+	}
+	if len(newestFirst) != 3 || newestFirst[0].Subject != "third commit" {
+		t.Errorf("expected newest first to start with 'third commit'")
+	}
+}
+
+func TestListCommits_NonRepo(t *testing.T) {
+	nonRepoDir := t.TempDir()
+	origWd, _ := os.Getwd()
+	defer os.Chdir(origWd)
+	_ = os.Chdir(nonRepoDir)
+
+	_, err := git.ListCommits(context.Background(), git.CommitFilter{})
+	if err == nil {
+		t.Errorf("expected error in non-git repo, got nil")
+	}
+}
